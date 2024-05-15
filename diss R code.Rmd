@@ -1,0 +1,999 @@
+---
+output:
+  html_document: default
+  word_document: default
+---
+#downloading and cleaning data
+
+setwd("~/UCL UG dissertation")
+
+
+library(dplyr)
+library(readr)
+library(plm)
+library(lmtest)
+library(multiwayvcov)
+library(broom)
+library(MatchIt)
+library(Matching)
+library(cobalt)
+library(car)
+library(ggrepel)
+library(fixest)
+library(reshape2)
+library(ggplot2)
+library(sandwich)
+
+
+data <- read_csv("final diss data to use/final diss data inc linear time trends.csv")
+provinces <- read_csv("final diss data to use/province parallel trends test.csv")
+
+
+data$DISTRICT <- as.factor(data$DISTRICT)
+data$`census date` <- as.numeric(data$`census date`)
+
+
+names(data)[names(data) == "census date"] <- "census_date"
+
+
+#instruct which columns in identify the entity and time dimensions, respectively.
+pdata <- pdata.frame(data, index = c("DISTRICT", "census_date"))
+
+
+# Original variable names
+original_names <- c("log.TOTAL.POPULATION", "average.years.education.1962.control", "Eucledian.distance.to.nairobi", "log.urbanisation.rate")
+
+# New variable names
+new_names <- c("log total population", "average years education 1962 control", "Eucledian distance to Nairobi", "log urbanisation rate")
+
+# Rename variables in the dataframe
+names(pdata) <- ifelse(names(pdata) %in% original_names, new_names[match(names(pdata), original_names)], names(pdata))
+
+
+pdata$post_1969 <- ifelse(pdata$census_date == 1969, 1, 0)
+pdata$post_1979 <- ifelse(pdata$census_date == 1979, 1, 0)
+
+
+subset_1962 <- subset(pdata, census_date == 1962)
+
+#########
+
+##defining treatment variables
+#1) treatment defined as raw % of europeans and asians
+
+
+# Calculate the range of your data
+data_range <- range(subset_1962$treatment.value.Asian.European, na.rm = TRUE)
+
+#plot histogram
+hist(subset_1962$treatment.value.Asian.European, main = "Distribution of Asian + European population proportion in Kenyan Districts, 1962",
+     xlab = "% Asian + European in Districts", ylab = "no. of Districts", col = "lightblue", breaks = 20, xlim = c(data_range[1] - 1, 40))
+
+# Add a red line for the mean
+abline(v = mean_value, col = "red", lwd = 2)
+
+# Add a blue line for the median
+abline(v = median_value, col = "blue", lwd = 2)
+
+# Add a legend to the plot
+legend("topright", legend = c("Mean", "Median"), col = c("red", "blue"), lwd = 2)
+
+# Create a dataframe with  data
+data <- data.frame(value = subset_1962$treatment.value.Asian.European)
+
+mean_value <- mean(subset_1962$treatment.value.Asian.European)
+median_value <- median(subset_1962$treatment.value.Asian.European)
+
+
+# Plot the line graph
+plot <- ggplot(data, aes(x = value)) +
+  geom_density(fill = "lightblue", color = "black") +
+  xlim(data_range[1] - 1, 40) +
+  labs(title = "Figure 1: Distribution of Asian + European raw population proportion in Kenyan districts, 1962",
+       x = "% Asian + European population within the district",
+       y = "Proportion of districts") +
+  geom_vline(aes(xintercept = mean(value), linetype = "Mean"), color = "red", size = 1.5) +
+  geom_vline(aes(xintercept = median(value), linetype = "Median"), color = "blue", size = 1.5) +
+  scale_x_continuous(limits = c(data_range[1] - 1, 40)) +
+  scale_linetype_manual(name = "Line Type", values = c("Mean" = "dashed", "Median" = "dashed")) +
+  annotate("text", x = mean_value + 2.5, y = 0.8, label = paste(round(mean_value, 2)), color = "red", size = 5, hjust = 1) +
+  annotate("text", x = median_value - 2.5, y = 0.8, label = paste(round(median_value, 2)), color = "blue", size = 5, hjust = 0) +
+  theme_minimal() +
+  theme(legend.position = c(0.9, 0.8),  # Move legend to the right, adjust the position
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank(),  # Remove major grid lines
+        panel.grid.minor = element_blank())  # Remove minor grid lines
+
+
+
+plot
+
+ggsave("plot.jpg", plot, width = 10, height = 6, units = "in", dpi = 300)
+
+
+
+#2) treatment defined as 'log of % of europeans and asians' to linearise the skewed data
+
+subset_1962$log.treatment.value.Asian.European <- log(subset_1962$treatment.value.Asian.European)
+
+
+# Calculate mean and median
+mean_value <- mean(subset_1962$log.treatment.value.Asian.European)
+median_value <- median(subset_1962$log.treatment.value.Asian.European)
+data_range <- range(subset_1962$log.treatment.value.Asian.European)
+
+# Create a dataframe with your data
+data <- data.frame(value = subset_1962$log.treatment.value.Asian.European)
+
+# Plot the histogram
+plot2 <- ggplot(data, aes(x = value, y = ..count..)) +
+  geom_histogram(binwidth = 0.25, fill = "lightblue", color = "black") +
+  labs(title = "Figure 2: Distribution of Asian + European logged population proportion in Kenyan districts, 1962",
+       x = "Logged % Asian + European population within the district",
+       y = "Number of districts") +
+  geom_vline(aes(xintercept = mean_value, linetype = "Mean"), color = "red", size = 1.5) +
+  geom_vline(aes(xintercept = median_value + 0.5, linetype = "Median"), color = "blue", size = 1.5) +
+  annotate("text", x = mean_value - 0.01, y = 5.5, label = paste(round(mean_value, 2)), color = "red", size = 5, hjust = 1) +
+  annotate("text", x = median_value + 0.5, y = 5.5, label = paste(round(median_value, 2)), color = "blue", size = 5, hjust = 0) +
+  annotate("text", x = data_range[2], y = 5, label = paste("Range:", round(data_range[1], 2), "-", round(data_range[2], 2)), hjust = 1, size = 4) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 6), breaks = seq(0, 6, 1)) +  # Change y-axis to increments of 1 and limit to 6
+  scale_linetype_manual(name = "Lines", values = c("Mean" = "dashed", "Median" = "dashed")) +
+  theme_minimal() +
+  theme(legend.position = c(0.85, 0.75),  # Adjust legend position
+        legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+plot2
+
+
+
+#to add treatment values to full pdata dataset
+pdata <- pdata %>%
+  left_join(subset_1962 %>% dplyr::select(DISTRICT, log.treatment.value.Asian.European),
+            by = "DISTRICT")
+
+
+#3) defining treatment as 1 if above 1 % of europeans and asians and 0 if below 1 % of europeans and asians
+
+#creating treatment values in 1962 subset data
+subset_1962$binary.treatment.1.perc.Asian.European <- ifelse(subset_1962$log.treatment.value.Asian.European > 0, 1, 0)
+
+#to add treatment values to full pdata dataset
+
+pdata <- pdata %>%
+  left_join(subset_1962 %>% dplyr::select(DISTRICT, binary.treatment.1.perc.Asian.European),
+            by = "DISTRICT")
+
+
+########
+
+##parallel trends on the unmatched dataset
+#testing parallel trends assumption using binary 1% treatment indicator 
+
+
+#will have some districts that have NA treatment as these districts will appear only in 1948 (as merged in 1962), and treatment status defined by 1962 Asian+European pop. So for parallel trends will have to remove these NAs
+
+#remove NA districts
+pdata_clean2 <- pdata[!is.na(pdata$binary.treatment.1.perc.Asian.European), ]
+
+#assessing parallel trends graphically
+
+# means of outcome 'percentage of district employed in all industries'
+
+#for treated districts (treatment defined by 1962 Asian+European proportion of district being above (=1) or below (=0) the median)
+means.t2 <-c(
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1948&pdata_clean2$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE), 
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1962&pdata_clean2$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE),
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1969&pdata_clean2$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE),
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1979&pdata_clean2$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE))
+
+#for untreated districts (treatment defined by 1962 Asian+European proportion of district being above (=1) or below (=0) the median)
+
+means.c2 <-c(
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1948&pdata_clean2$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE), 
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1962&pdata_clean2$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE),
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1969&pdata_clean2$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE),
+  mean(pdata_clean2$percent.district.total.employment.all.industries[pdata_clean2$census_date==1979&pdata_clean2$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE))
+
+# plot
+y_range2 <- range(c(means.t2, means.c2), na.rm = TRUE)
+
+plot(means.t2,
+     type="o",
+     pch=16,
+     col="red",
+     xaxt="n",
+     xlab="Year",
+     ylab="% of district employed",
+     ylim = y_range2) # Use the calculated y-axis range
+
+lines(means.c2,type="o",pch=15,col="blue")
+axis(1,at=c(1,2,3,4),lab=c(1948,1962,1969, 1979))
+legend("topright",
+       c("Treated","Control"),
+       col=c("red","blue"),
+       pch=c(16,15),
+       lty=c(1,1))
+
+
+# Create the ggplot object
+line_pos <- mean(c(which(1:length(means.t2) == 16), which(1:length(means.t2) == 23)))
+
+# Create the ggplot object
+ggg <- ggplot() +
+  geom_line(aes(x = 1:length(means.t2), y = means.t2, color = "Treated"), linetype = "solid") +
+  geom_line(aes(x = 1:length(means.c2), y = means.c2, color = "Control"), linetype = "solid") +
+  geom_point(aes(x = 1:length(means.t2), y = means.t2, color = "Treated"), pch = 16) +
+  geom_point(aes(x = 1:length(means.c2), y = means.c2, color = "Control"), pch = 15) +
+  labs(x = "Year", y = "% of district employed") +
+  scale_x_continuous(breaks = c(1, 2, 3, 4), labels = c(1948, 1962, 1969, 1979)) +
+  scale_y_continuous(limits = y_range2, breaks = seq(0, max(y_range2), by = 5)) +
+  theme_minimal() +
+  scale_color_manual(values = c("Treated" = "red", "Control" = "blue"), name = "Treatment") +
+  guides(color = guide_legend(title = NULL)) +
+  ggtitle("Figure X: Visual parallel trends test") +
+  geom_vline(xintercept = line_pos, linetype = "dashed", color = "red") +
+  annotate("text", x = line_pos + 0.1, y = max(means.t2), label = "Treatment", hjust = 0, vjust = 0.5, color = "red") +
+  theme(axis.text = element_text(size = 12),  # Increase the size of axis values
+        panel.grid.major = element_blank(),  # Remove major gridlines
+        panel.grid.minor = element_blank(),  # Remove minor gridlines
+        panel.border = element_blank(),  # Remove panel borders
+        axis.line = element_line(size = 0.2))  # Adjust axis line thickness
+
+ggg
+
+
+###########
+#correlation plot between treatment and per capita outcomes for Data section using unmatched dataset
+
+class(pdata$average.years.education)
+
+pdata_subset_ps_matched
+
+subset_pdata_1962 <- pdata[pdata$census_date == 1962, ]
+subset_pdata_1962 <- subset(subset_pdata_1962, percent.district.total.employment.all.industries != 0)
+
+
+
+# Fit a linear regression model
+model <- lm(percent.district.total.employment.all.industries ~ log.treatment.value.Asian.European, data = subset_pdata_1962)
+model
+
+# Extract slope and intercept from the model
+slope <- coef(model)[2]
+intercept <- coef(model)[1]
+
+# Calculate the correlation coefficient
+correlation_coef <- cor(subset_pdata_1962$log.treatment.value.Asian.European, subset_pdata_1962$percent.district.total.employment.all.industries)
+
+
+
+# Create the scatterplot with labels and correlation line
+corr_plot <- ggplot(subset_pdata_1962, aes(x = log.treatment.value.Asian.European, y = percent.district.total.employment.all.industries, label = DISTRICT)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.7) +  # Adjust point color, size, and transparency
+  geom_text_repel(size = 3, segment.color = "transparent", max.overlaps = Inf) +  # Improved label text size and less overlap
+  geom_abline(intercept = intercept, slope = slope, color = "red", linetype = "dashed") +  # Add correlation line
+  annotate("text", x = max(subset_pdata_1962$log.treatment.value.Asian.European), y = max(subset_pdata_1962$percent.district.total.employment.all.industries), label = paste0("Correlation coefficient: ", round(correlation_coef, 2)), hjust = 1.3, vjust = 1.3, size = 3, color = "red") +  # Add correlation coefficient label
+  labs(x = "Logged % of Asian + European District Population", y = "District total employment rate (%)") +  # Add axis labels
+  theme_bw() +  # Use a white background with black gridlines
+  theme(axis.text = element_text(size = 10),  # Adjust axis text size
+        axis.title = element_text(size = 12),  # Adjust axis title size
+        panel.grid.major = element_line(color = "lightgrey", size = 0.5),  # Adjust major grid lines
+        panel.grid.minor = element_blank(),  # Remove minor grid lines
+        panel.border = element_blank())  # Remove outer rectangular grid lines
+
+ggsave("corr_plot.png", plot = corr_plot, width = 8, height = 6, units = "in")
+
+
+subset_pdata_1969 <- pdata_subset_ps_matched[pdata_subset_ps_matched$census_date == 1969, ]
+
+
+##########
+
+##summary stats for unmatched dataset
+
+sd_without_na <- sd(pdata$`log total population`, na.rm = TRUE)
+
+# Print the result
+print(sd_without_na)
+
+num_observations <- length(na.omit(pdata$`log total population`))
+
+length(pdata$`average years education 1962 control`)
+
+# Print the result
+print(num_observations)
+
+# Print the result
+print(summary_stats)
+
+# Print the result
+print(num_observations)
+
+summary((subset(pdata, `average years education 1962 control` != 0))$average.years.education)
+```
+
+#####
+
+###MATCHING: 
+#matching based on 1962 pre-treatment covariates/outcomes
+
+subset_1962_nas_removed <- subset(subset_1962, !is.na(percent.district.total.employment.all.industries))
+
+subset_1962_nas_removed <- subset(subset_1962, !is.na(average.years.education))
+
+
+
+#Matching method 1: propensity score matching: Perform the matching based on the estimated propensity scores. You can choose from several methods (e.g., nearest neighbor, optimal, etc.). Nearest neighbor is a common choice.
+ps_model <- matchit(binary.treatment.1.perc.Asian.European ~ percent.district.total.employment.all.industries + average.years.education , data = subset_1962_nas_removed, method = "nearest", replace = TRUE, ratio = 2)
+#ratio means one-to-three matching
+#+ log.TOTAL.POPULATION + average.years.education.1962.control + Eucledian.distance.to.nairobi + log.urbanisation.rate
+
+#Assess Matching Quality: After matching, it's crucial to assess the quality of the match. You can check for balance in covariates between treated and untreated groups using summary statistics or graphical methods.
+
+# Specify the variables you want to iterate over
+variables <- c("percent.district.total.employment.all.industries",
+               "average.years.education")
+
+
+##balance test on unmatched dataset
+
+# Separate treatment and control groups
+treatment_group <- subset_1962_nas_removed[subset_1962_nas_removed$binary.treatment.1.perc.Asian.European == 1, ]
+control_group <- subset_1962_nas_removed[subset_1962_nas_removed$binary.treatment.1.perc.Asian.European == 0, ]
+
+# Specify the variables you want to iterate over
+variables <- c("percent.district.total.employment.all.industries",
+               "average.years.education")
+
+#"log.TOTAL.POPULATION",               "average.years.education.1962.control",               "Eucledian.distance.to.nairobi",               "log.urbanisation.rate", 
+
+# Perform balance tests
+balance_tests <- lapply(variables, function(var) {
+  if (is.numeric(subset_1962_nas_removed[[var]])) {
+    t.test(treatment_group[[var]], control_group[[var]])
+  } else {
+    chisq.test(table(treatment_group[[var]], control_group[[var]]))
+  }
+})
+
+# Print balance test results
+names(balance_tests) <- variables
+balance_tests
+
+##balance test on matched dataset
+treatment_group_ps_matched <- matched__data_ps[matched__data_ps$binary.treatment.1.perc.Asian.European == 1, ]
+control_group_ps_matched <- matched__data_ps[matched__data_ps$binary.treatment.1.perc.Asian.European == 0, ]
+
+#perform balance test
+balance_tests_ps_matched <- lapply(variables, function(var) {
+  if (is.numeric(matched__data_ps[[var]])) {
+    t.test(treatment_group_ps_matched[[var]], control_group_ps_matched[[var]])
+  } else {
+    chisq.test(table(treatment_group_ps_matched[[var]], control_group_ps_matched[[var]]))
+  }
+})
+
+# Print balance test results
+names(balance_tests_ps_matched) <- variables
+balance_tests_ps_matched #gives p-value / t-test results
+
+## Combine t-tests or p-values for comparison of balance between matched and unmatched dataset for treated vs control group
+comparison <- data.frame(Variable = variables,
+                         Unmatched_p_value = sapply(balance_tests, function(x) x$p.value),
+                         Matched_p_value = sapply(balance_tests_ps_matched, function(x) x$p.value))
+
+# Print comparison
+print(comparison) #gives p-value/t-test results
+
+
+#gives standardised mean differences result
+bal.tab(ps_model, un = TRUE)  # before matching (diff. un) = standardised mean difference vs after matching (diff. adj) = standardised mean difference
+
+love.plot(ps_model, threshold = 0.1)  # Displays a Love plot for standardized mean differences
+
+
+##Creating Matched Dataset: Extract the matched dataset for subsequent analysis. This dataset will contain only the matched treated and untreated observations, making them more comparable for your analysis.
+# Create matched dataset
+#matched_data_md <- match.data(mahal_match)
+
+matched__data_ps <- match.data(ps_model)
+
+pdata_subset_ps_matched <- pdata %>%
+  filter(DISTRICT %in% matched__data_ps$DISTRICT)
+
+
+##FE model for outcomes I have pre-treatment data on using matched dataset
+#pdata_subset_mahalanobis_matched <- pdata %>% filter(DISTRICT %in% matched_data_md$DISTRICT)
+
+
+
+#Matching method 2: mahalanobis distance matching
+mahal_match <- matchit(binary.treatment.1.perc.Asian.European ~ percent.district.total.employment.all.industries + average.years.education, data = subset_1962_nas_removed, method = "nearest", distance = "mahalanobis", replace = TRUE, ratio = 2)
+#, ratio = 3
+#+ log.TOTAL.POPULATION + average.years.education.1962.control + Eucledian.distance.to.nairobi + log.urbanisation.rate
+
+##balance test on unmatched dataset
+
+# Separate treatment and control groups
+treatment_group <- subset_1962_nas_removed[subset_1962_nas_removed$binary.treatment.1.perc.Asian.European == 1, ]
+control_group <- subset_1962_nas_removed[subset_1962_nas_removed$binary.treatment.1.perc.Asian.European == 0, ]
+
+# Specify the variables you want to iterate over
+variables <- c("percent.district.total.employment.all.industries",
+               "average.years.education")
+
+#"log.TOTAL.POPULATION",               "average.years.education.1962.control",               "Eucledian.distance.to.nairobi",               "log.urbanisation.rate", 
+
+# Perform balance tests
+balance_tests <- lapply(variables, function(var) {
+  if (is.numeric(subset_1962_nas_removed[[var]])) {
+    t.test(treatment_group[[var]], control_group[[var]])
+  } else {
+    chisq.test(table(treatment_group[[var]], control_group[[var]]))
+  }
+})
+
+# Print balance test results
+names(balance_tests) <- variables
+balance_tests
+
+##balance test on matched dataset
+treatment_group_matched <- matched_data_md[matched_data_md$binary.treatment.1.perc.Asian.European == 1, ]
+control_group_matched <- matched_data_md[matched_data_md$binary.treatment.1.perc.Asian.European == 0, ]
+
+balance_tests_matched <- lapply(variables, function(var) {
+  if (is.numeric(matched_data_md[[var]])) {
+    t.test(treatment_group_matched[[var]], control_group_matched[[var]])
+  } else {
+    chisq.test(table(treatment_group_matched[[var]], control_group_matched[[var]]))
+  }
+})
+
+# Print balance test results
+names(balance_tests_matched) <- variables
+balance_tests_matched
+
+## Combine t-tests or p-values for comparison of balance between matched and unmatched dataset for treated vs control group
+comparison <- data.frame(Variable = variables,
+                         Unmatched_p_value = sapply(balance_tests, function(x) x$p.value),
+                         Matched_p_value = sapply(balance_tests_matched, function(x) x$p.value))
+
+# Print comparison
+print(comparison) #gives p-value/t-test results
+
+bal.tab(mahal_match, un = TRUE) # gives standardised mean difference results
+
+
+######
+##parallel trends on the matched dataset for outcome 'percent of district' 
+
+##testing parallel trends assumption using binary 1% treatment indicator and province parallel trend 
+
+
+
+##testing province parallel trends 
+
+# Convert 'census_date' to a factor 
+provinces$census_date <- factor(provinces$census_date)
+
+provinces$total_employment_all_industries
+provinces$PROVINCE
+
+# Assume the levels are correctly indexed 
+index_1963 <- which(levels(provinces$census_date) == "1963")
+index_1964 <- which(levels(provinces$census_date) == "1964")
+mid_point <- (index_1963 + index_1964) / 2
+
+
+# colour palette
+my_palette <- c("#4e79a7", "#f28e2c", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ab")
+
+# Plot with the new color palette
+province_plot <- ggplot(data = provinces, aes(x = census_date, y = total_employment_all_industries, group = PROVINCE, color = PROVINCE)) +
+  geom_line() +  # Add lines
+  geom_point() +  # Optionally add points
+  geom_vline(xintercept = mid_point, linetype = "dashed", color = "red", size = 1) +
+  annotate("text", x = index_1963 - 0.5, y = Inf, label = "Pre-treatment", hjust = 1.5, vjust = 1, color = "red") +
+  annotate("text", x = index_1964 + 0.05, y = Inf, label = "Post-treatment", hjust = -0.5, vjust = 1, color = "red") +
+  labs(title = "Figure X: Total Employment by Province Over Time",
+       x = "Year",
+       y = "Total Employment",
+       color = "Province") +
+  scale_color_manual(values = my_palette) +  # Use the defined color palette
+  theme_minimal() +  # Use a minimal theme
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        plot.background = element_rect(fill = "white"),  # Change background to white
+        panel.grid.major = element_blank(),  
+        panel.grid.minor = element_blank())  
+
+
+
+na_rows <- pdata[is.na(pdata_subset_mahalanobis_matched$binary.treatment.1.perc.Asian.European), ]
+
+
+
+##assessing parallel trends of matched dataset graphically
+
+# means of outcome 'percentage of district employed in all industries'
+
+#for treated districts (treatment defined by 1962 Asian+European proportion of district being above (=1) or below (=0) 1%)
+means.t2 <-c(
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1948&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE), 
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1962&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE),
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1969&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE),
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1979&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==1], na.rm = TRUE))
+
+#for untreated districts (treatment defined by 1962 Asian+European proportion of district being above (=1) or below (=0) the median)
+
+
+
+means.c2 <-c(
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1948&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE), 
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1962&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE),
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1969&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE),
+  mean(pdata_subset_ps_matched$percent.district.total.employment.all.industries[pdata_subset_ps_matched$census_date==1979&pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European==0], na.rm = TRUE))
+
+
+
+# plot
+y_range2 <- range(c(means.t2, means.c2), na.rm = TRUE)
+
+
+# Create the ggplot object
+line_pos <- mean(c(which(1:length(means.t2) == 16), which(1:length(means.t2) == 23)))
+
+# Create the ggplot object
+gg <- ggplot() +
+  geom_line(aes(x = 1:length(means.t2), y = means.t2, color = "Treated"), linetype = "solid") +
+  geom_line(aes(x = 1:length(means.c2), y = means.c2, color = "Control"), linetype = "solid") +
+  geom_point(aes(x = 1:length(means.t2), y = means.t2, color = "Treated"), pch = 16) +
+  geom_point(aes(x = 1:length(means.c2), y = means.c2, color = "Control"), pch = 15) +
+  labs(x = "Year", y = "% of district employed") +
+  scale_x_continuous(breaks = c(1, 2, 3, 4), labels = c(1948, 1962, 1969, 1979)) +
+  scale_y_continuous(limits = y_range2, breaks = seq(0, max(y_range2), by = 5)) +
+  theme_minimal() +
+  scale_color_manual(values = c("Treated" = "red", "Control" = "blue"), name = "Treatment") +
+  guides(color = guide_legend(title = NULL)) +
+  ggtitle("Figure X: Visual parallel trends test") +
+  geom_vline(xintercept = line_pos, linetype = "dashed", color = "red") +
+  annotate("text", x = line_pos + 0.1, y = max(means.t2), label = "Treatment", hjust = 0, vjust = 0.5, color = "red") +
+  theme(axis.text = element_text(size = 12),  # Increase the size of axis values
+        panel.grid.major = element_blank(),  # Remove major gridlines
+        panel.grid.minor = element_blank(),  # Remove minor gridlines
+        panel.border = element_blank(),  # Remove panel borders
+        axis.line = element_line(size = 0.2))  # Adjust axis line thickness
+
+gg
+
+
+
+plot(means.t2,
+     type="o",
+     pch=16,
+     col="red",
+     xaxt="n",
+     xlab="Year",
+     ylab="% of district employed",
+     ylim = y_range2) # Use the calculated y-axis range
+
+
+lines(means.c2,type="o",pch=15,col="blue")
+axis(1,at=c(1,2,3,4),lab=c(1948,1962,1969, 1979))
+legend("topright",
+       c("Treated","Control"),
+       col=c("red","blue"),
+       pch=c(16,15),
+       lty=c(1,1))
+
+
+
+pdata_subset_ps_matched$census_date <- relevel(factor(pdata_subset_ps_matched$census_date), ref = "1962")
+
+
+# Run the fixed effects model with the interaction terms
+
+
+#lags and leads for log treatment
+
+model_lags_leads <- feols(percent.district.total.employment.all.industries ~ factor(census_date)*log.treatment.value.Asian.European + `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi` + `log urbanisation rate` |  DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT)
+
+summary(model_lags_leads)
+pdata$log.treatment.value.Asian.European
+
+
+##assessing parallel trends using placebo difference-in-differences effect before the treatment occurred
+
+
+# Extract coefficients and confidence intervals
+coef_table <- tidy(model_lags_leads, conf.int = TRUE)
+coef_table
+
+
+# Filter coef_table for specific rows
+coef_of_interest <- coef_table[coef_table$term %in% c("factor(census_date)1948:log.treatment.value.Asian.European", 
+                                                      "factor(census_date)1969:log.treatment.value.Asian.European", 
+                                                      "factor(census_date)1979:log.treatment.value.Asian.European"), ]
+
+# Add a row for 1962 with estimate 0 and NA for confidence interval
+coef_of_interest <- rbind(coef_of_interest, c("factor(census_date)1962:log.treatment.value.Asian.European", 0, NA, NA, NA))
+
+# Remove NA and 1962's confidence interval
+coef_of_interest <- coef_of_interest[!is.na(coef_of_interest$estimate), ]
+
+# Reorder rows to match the desired order of plots
+coef_of_interest <- coef_of_interest[order(coef_of_interest$term), ]
+
+# Convert estimate column to numeric
+coef_of_interest$estimate <- as.numeric(coef_of_interest$estimate)
+coef_of_interest$conf.low <- as.numeric(coef_of_interest$conf.low)
+coef_of_interest$conf.high <- as.numeric(coef_of_interest$conf.high)
+
+
+# Create a plot
+leads_lags_log <- ggplot(coef_of_interest, aes(x = as.factor(substr(term, 22, 25)), y = estimate)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  geom_vline(xintercept = 2.5, linetype = "dashed") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  labs(x = "Year", y = "Estimate") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid = element_blank()) +
+  scale_x_discrete(labels = c("1948", "1962", "1969", "1979")) +
+  scale_y_continuous(breaks = seq(-5, 10, by = 2.5))
+
+leads_lags_log
+
+
+#lags and leads for binary treatment
+
+pdata_subset_ps_matched$census_date <- relevel(factor(pdata_subset_ps_matched$census_date), ref = "1962")
+
+model_lags_leads <- feols(percent.district.total.employment.all.industries ~ factor(census_date)*binary.treatment.1.perc.Asian.European  |  DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT)
+
+#+ `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi` + `log urbanisation rate`
+
+summary(model_lags_leads)
+pdata$log.treatment.value.Asian.European
+
+
+##assessing parallel trends using placebo difference-in-differences effect before the treatment occurred
+
+# Extract coefficients and confidence intervals
+coef_table <- tidy(model_lags_leads, conf.int = TRUE)
+coef_table
+
+
+# Filter coef_table for specific rows
+coef_of_interest <- coef_table[coef_table$term %in% c("factor(census_date)1948:binary.treatment.1.perc.Asian.European", 
+                                                      "factor(census_date)1969:binary.treatment.1.perc.Asian.European", 
+                                                      "factor(census_date)1979:binary.treatment.1.perc.Asian.European"), ]
+
+# Add a row for 1962 with estimate 0 and NA for confidence interval
+coef_of_interest <- rbind(coef_of_interest, c("factor(census_date)1962:binary.treatment.1.perc.Asian.European", 0, NA, NA, NA, NA, NA))
+
+# Remove NA and 1962's confidence interval
+coef_of_interest <- coef_of_interest[!is.na(coef_of_interest$estimate), ]
+
+# Reorder rows to match the desired order of plots
+coef_of_interest <- coef_of_interest[order(coef_of_interest$term), ]
+
+# Convert estimate column to numeric
+coef_of_interest$estimate <- as.numeric(coef_of_interest$estimate)
+coef_of_interest$conf.low <- as.numeric(coef_of_interest$conf.low)
+coef_of_interest$conf.high <- as.numeric(coef_of_interest$conf.high)
+
+
+# Create a plot
+leads_lags_binary <- ggplot(coef_of_interest, aes(x = as.factor(substr(term, 22, 25)), y = estimate)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "black") +
+  geom_vline(xintercept = 2.5, linetype = "dashed") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  labs(x = "Year", y = "Estimate") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), panel.grid = element_blank()) +
+  scale_x_discrete(labels = c("1948", "1962", "1969", "1979")) +
+  scale_y_continuous(breaks = seq(-15, 15, by = 2.5))
+
+
+######
+
+#test 1 for requirement of no multicollinearity (or perfect colliearity) between explanatory variables within model: correlation matrix
+
+
+# Calculate the correlation matrix
+cor_matrix <- cor(pdata[, c("log total population", "average years education 1962 control", "Eucledian distance to Nairobi", "log urbanisation rate")], use = "complete.obs")
+
+# Set diagonal elements to NA
+diag(cor_matrix) <- NA
+cor_matrix[upper.tri(cor_matrix)] <- NA
+
+# Melt the correlation matrix for plotting
+melted_cor_matrix <- melt(cor_matrix, na.rm = TRUE)
+
+plot3 <- ggplot(data = melted_cor_matrix, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "white") +  # Adding border to tiles
+  geom_text(aes(label = sprintf("%.2f", value)), vjust = 1) +  # Display correlation coefficients
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, limit = c(-1,1), space = "Lab", name="Pearson\nCorrelation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),  # Adjust text size and angle
+        axis.text.y = element_text(size = 12),
+        axis.title = element_blank(),  # Remove axis titles
+        panel.grid.major = element_blank(),  # Remove major grid lines
+        panel.grid.minor = element_blank()) +  # Remove minor grid lines
+  labs(x = NULL, y = NULL, title = 'Figure X: Correlation Matrix of Control Variables')  # Remove x and y axis labels
+
+
+#test 2 for requirement of no multicollinearity (or perfect colliearity) between explanatory variables within model: VIF scores
+
+#check collinearity of these covariates using VIF:
+
+
+lm_model <- lm(percent.district.total.employment.all.industries ~ 
+                 `log total population` + 
+                 `average years education 1962 control` + 
+                 `Eucledian distance to Nairobi` + 
+                 `log urbanisation rate`, 
+               data = pdata)
+
+
+
+vif_results <- vif(lm_model)
+print(vif_results)
+
+
+#######
+
+#correlation plot between treatment and per capita outcomes for results section using matched districts
+
+class(pdata$average.years.education)
+
+pdata_subset_ps_matched
+
+subset_pdata_1962 <- pdata_subset_ps_matched[pdata_subset_ps_matched$census_date == 1962, ]
+subset_pdata_1962 <- subset(subset_pdata_1962, average.years.education != 0)
+
+
+
+# Fit a linear regression model
+model <- lm(average.years.education ~ log.treatment.value.Asian.European, data = subset_pdata_1962)
+model
+
+# Extract slope and intercept from the model
+slope <- coef(model)[2]
+intercept <- coef(model)[1]
+
+# Calculate the correlation coefficient
+correlation_coef <- cor(subset_pdata_1962$log.treatment.value.Asian.European, subset_pdata_1962$average.years.education)
+
+# Create the scatterplot with labels and correlation line
+corr_plot <- ggplot(subset_pdata_1962, aes(x = log.treatment.value.Asian.European, y = average.years.education, label = DISTRICT)) +
+  geom_point(color = "steelblue", size = 3, alpha = 0.7) +  # Adjust point color, size, and transparency
+  geom_text_repel(size = 3, segment.color = "transparent") +  # Improved label text size and less overlap
+  geom_abline(intercept = intercept, slope = slope, color = "red", linetype = "dashed") +  # Add correlation line
+  annotate("text", x = max(subset_pdata_1962$log.treatment.value.Asian.European), y = max(subset_pdata_1962$average.years.education), label = paste0("Correlation coefficient: ", round(correlation_coef, 2)), hjust = 1, vjust = 1, size = 3, color = "red") +  # Add correlation coefficient label
+  labs(x = "Logged % of Asian + European District Population", y = "Average Years of Education") +  # Add axis labels
+  theme_bw() +  # Use a white background with black gridlines
+  theme(axis.text = element_text(size = 10),  # Adjust axis text size
+        axis.title = element_text(size = 12),  # Adjust axis title size
+        panel.grid.major = element_line(color = "lightgrey", size = 0.5),  # Adjust major grid lines
+        panel.grid.minor = element_blank(),  # Remove minor grid lines
+        panel.border = element_blank())  # Remove outer rectangular grid lines
+
+
+summary(subset_pdata_1969$average.years.education)
+
+subset_pdata_1969 <- pdata_subset_ps_matched[pdata_subset_ps_matched$census_date == 1969, ]
+```
+
+######
+
+
+#for normal FE analysis
+
+#matched vs unmatched dataset: done
+#employment vs education outcomes: done
+#binary vs log treatment: done
+#with controls and without controls: done
+
+
+##FE for matched dataset with  log treatment variable
+
+#creating log treatment variables
+pdata_subset_ps_matched$post.treatment.log <- (pdata_subset_ps_matched$post*pdata_subset_ps_matched$log.treatment.value.Asian.European)
+
+#defining post treatment for 1969 to find ATE for 1969 separately
+pdata_subset_ps_matched$post.treatment.log1969 <- (pdata_subset_ps_matched$post_1969*pdata_subset_ps_matched$log.treatment.value.Asian.European)
+
+#defining post treatment for 1979 to find ATE for 1979 separately
+pdata_subset_ps_matched$post.treatment.log1979 <- (pdata_subset_ps_matched$post_1979*pdata_subset_ps_matched$log.treatment.value.Asian.European)
+
+
+###outcome specification 1: percent district 
+
+##employment outcomes
+
+
+#simplest model without any covariates
+summary(feols(percent.district.total.employment.all.industries ~ post.treatment.log | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+#add 
+
+#control for all covariates established in corr matrix and VIF test and 1969 and 1979 ATEs
+summary(feols(percent.district.total.employment.all.industries ~ post.treatment.log + `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi` + `log urbanisation rate`| DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+##education outcomes:
+
+
+summary(feols(average.years.education ~ post.treatment.log
+              | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+#control for all covariates established in corr matrix and VIF test and 1969 and 1979 ATEs
+summary(feols(average.years.education ~ post.treatment.log + `log total population` + `Eucledian distance to Nairobi` + `log urbanisation rate`
+              | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+```{r}
+##FE for unmatched dataset with  log treatment variable
+
+#creating log treatment variables
+pdata$post.treatment.log <- (pdata$post*pdata$log.treatment.value.Asian.European)
+
+#defining post treatment for 1969 to find ATE for 1969 separately
+pdata$post.treatment.log1969 <- (pdata$post_1969*pdata$log.treatment.value.Asian.European)
+
+#defining post treatment for 1979 to find ATE for 1979 separately
+pdata$post.treatment.log1979 <- (pdata$post_1979*pdata$log.treatment.value.Asian.European)
+
+
+###outcome specification 1: percent district 
+
+##employment outcomes
+
+#simplest model without any covariates
+summary(feols(percent.district.total.employment.all.industries ~ post.treatment.log | DISTRICT + census_date, data = pdata, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+#with all controls
+summary(feols(percent.district.total.employment.all.industries ~ post.treatment.log + `log total population` +`Eucledian distance to Nairobi` + `log urbanisation rate` + `average years education 1962 control` | DISTRICT + census_date, data = pdata, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+#outcome: average years  education: 
+
+#simplest model without any covariates finding treatment effect for both 1969 and 1979
+summary(feols(average.years.education ~ post.treatment.log | DISTRICT + census_date, data = pdata, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+#with all controls
+summary(feols(average.years.education ~ post.treatment.log +`log total population` +`Eucledian distance to Nairobi` + `log urbanisation rate` | DISTRICT + census_date, data = pdata, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+
+```{r}
+##FE analysis for unmatched dataset with binary treatment
+
+#defining treatment*post value
+pdata$post.treatment.binary <- (pdata$post*pdata$binary.treatment.1.perc.Asian.European)
+
+#defining post treatment for 1969 to find ATE for 1969 separately
+pdata$post.treatment.binary1969 <- (pdata$post_1969*pdata$binary.treatment.1.perc.Asian.European)
+
+#defining post treatment for 1979 to find ATE for 1979 separately
+pdata$post.treatment.binary1979 <- (pdata$post_1979*pdata$binary.treatment.1.perc.Asian.European)
+
+
+###outcome specification 1: percent district 
+
+##employment outcomes
+
+#simplest model without any covariates
+summary(feols(percent.district.total.employment.all.industries ~ post.treatment.binary | DISTRICT + census_date, data = pdata, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+#+ `log total population` +`Eucledian distance to Nairobi` + `log urbanisation rate` + `average years education 1962 control`
+
+
+
+#outcome: average years education: 
+
+#simplest model without any covariates finding treatment effect for both 1969 and 1979
+summary(feols(average.years.education ~ post.treatment.binary | DISTRICT + census_date, data = pdata, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+#+ `log total population` +`Eucledian distance to Nairobi` + `log urbanisation rate` 
+
+
+#for matched dataset with binary treatment
+
+#defining treatment*post value
+pdata_subset_ps_matched$post.treatment.binary <- (pdata_subset_ps_matched$post*pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European)
+
+
+#defining post treatment for 1969 to find ATE for 1969 separately
+pdata_subset_ps_matched$post.treatment.binary1969 <- (pdata_subset_ps_matched$post_1969*pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European)
+
+#defining post treatment for 1979 to find ATE for 1979 separately
+pdata_subset_ps_matched$post.treatment.binary1979 <- (pdata_subset_ps_matched$post_1979*pdata_subset_ps_matched$binary.treatment.1.perc.Asian.European)
+
+
+###outcome specification 1: percent district 
+
+##employment outcomes
+
+#simplest model without any covariates
+model3<- summary(feols(percent.district.total.employment.all.industries ~ post.treatment.binary | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+confint(model3, "post.treatment.binary")
+
+
+#control for all covariates established in corr matrix and VIF test and 1969 and 1979 ATEs
+model4 <- summary(feols(percent.district.total.employment.all.industries ~ post.treatment.binary  + `log total population` + `average years education 1962 control` +`Eucledian distance to Nairobi` + `log urbanisation rate`
+                        | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+confint(model4, "post.treatment.binary")
+
+
+#outcome: average years education
+
+#simplest model without any covariates finding treatment effect for both 1969 and 1979
+summary(feols(average.years.education ~ post.treatment.binary | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+
+#control for all covariates established in corr matrix and VIF test and 1969 and 1979 ATEs
+summary(feols(average.years.education ~ post.treatment.binary  + `log total population`  +`Eucledian distance to Nairobi` + `log urbanisation rate`
+              | DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+#+ PROVINCE*census_date
+
+
+#model specification with linear province time trends
+
+
+#simplest model without any covariates
+summary(feols(average.years.education ~ post.treatment.binary + `log total population`+ `Eucledian distance to Nairobi` + `log urbanisation rate` + PROVINCE*census_date |  DISTRICT + census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+
+#add 'PROVINCE*census_date' to above models
+
+
+#analysis 2 post-matching: doing regression with outcome variables I have NO pre-treatment data 
+
+
+subset_pdata_matched_1969_79 <-subset(pdata_subset_ps_matched, census_date == 1969 | census_date == 1979)
+
+subset_pdata_matched_1969_79$post_1979 <- ifelse(as.character(subset_pdata_matched_1969_79$census_date) == 1979, 1, 0)
+
+subset_pdata_matched_1969_79$post_1969 <- ifelse(as.character(subset_pdata_matched_1969_79$census_date) == 1969, 1, 0)
+
+subset_pdata_matched_1969_79$post.treatment.binary1979 <- (subset_pdata_matched_1969_79$post_1979*subset_pdata_matched_1969_79$binary.treatment.1.perc.Asian.European)
+
+subset_pdata_matched_1969_79$post.treatment.binary1969 <- (subset_pdata_matched_1969_79$post_1969*subset_pdata_matched_1969_79$binary.treatment.1.perc.Asian.European)
+
+subset_pdata_matched_1969_79$post.treatment.log79 <- (subset_pdata_matched_1969_79$post_1979*subset_pdata_matched_1969_79$log.treatment.value.Asian.European)
+
+subset_pdata_matched_1969_79$post.treatment.log69 <- (subset_pdata_matched_1969_79$post_1979*subset_pdata_matched_1969_79$log.treatment.value.Asian.European)
+
+
+#non-agriculture employment outcome
+#binary treatment
+summary(feols(percent.district.total.employment.non.agriculture ~ post.treatment.binary1979  |  census_date, data = subset_pdata_matched_1969_79, cluster = ~DISTRICT))
+summary(feols(percent.district.total.employment.non.agriculture ~ post.treatment.binary1979 + `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi`  |  census_date, data = subset_pdata_matched_1969_79, cluster = ~DISTRICT))
+
+#log treatment
+summary(feols(percent.district.total.employment.non.agriculture ~ post.treatment.log79  |  census_date, data = subset_pdata_matched_1969_79, cluster = ~DISTRICT))
+summary(feols(percent.district.total.employment.non.agriculture ~ post.treatment.log79 + `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi`  |  census_date, data = subset_pdata_matched_1969_79, cluster = ~DISTRICT))
+
+
+
+#wage employment outcome
+summary(feols(percent.district.wage.employment.all.industries ~ post.treatment.binary1979| census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+ summary(feols(percent.district.wage.employment.all.industries ~ post.treatment.binary1979 + `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi` + `log urbanisation rate`| census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+
+ #wage employment outcome
+ summary(feols(percent.district.wage.employment.all.industries ~ post.treatment.log79| census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+ summary(feols(percent.district.wage.employment.all.industries ~ post.treatment.log79 + `log total population` + `average years education 1962 control` + `Eucledian distance to Nairobi` + `log urbanisation rate`| census_date, data = pdata_subset_ps_matched, cluster = ~DISTRICT))
+ 
+ 
